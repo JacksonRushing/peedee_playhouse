@@ -6,6 +6,8 @@ local pd <const> = playdate
 local gfx <const> = playdate.graphics
 
 local polygons = {}
+local transforms = {}
+local transformedPolygons = {}
 
 local cursorPos = pd.geometry.point.new(200, 120)
 
@@ -16,145 +18,65 @@ local currentCursorVelocity = CURSOR_BASE_VELOCITY
 
 local selection = nil
 local selectionPoint = nil
+local grabbed = nil
 local selectedIndex = -1
 
+local initialized = false
+local resolvedCollisions = {}
 
-table.insert(polygons, pd.geometry.polygon.new(10, 10, 25, 25, 30, 5, 10, 10))
 
-function getLowestPolygonIndex(polygon)
-    local lowestIndex = nil
-    local lowestY = math.maxinteger
-    local lowestX = math.maxinteger
-    for i=1, polygon:count() do
-        local point = polygon:getPointAt(i)
-        if point.y < lowestY then
-            lowestY = point.y
-            lowestX = point.x
-            lowestIndex = i
-        elseif point.y == lowestY then
-            if point.x < lowestX then
-                lowestX = point.x
-                lowestIndex = i
-            end
-        end
-    end
+function init()
+    initialized = true
+    --table.insert(polygons, pd.geometry.polygon.new(10, 10, 25, 25, 30, 5, 10, 10))
+    --table.insert(polygons, pd.geometry.polygon.new(110, 110, 125, 125, 130, 105, 110, 110))
+    table.insert(polygons, pd.geometry.polygon.new(300, 200, 325, 225, 350, 200, 337.5, 150, 312.5, 150, 300, 200))
+    
+    --table.insert(polygons, pd.geometry.polygon.new(10, 10, 110, 10, 60, 110, 10, 10))
+    -- table.insert(polygons, pd.geometry.polygon.new(200, 200, 250, 200, 225, 250,  200, 200))
 
-    return lowestIndex
-
+    table.insert(polygons, pd.geometry.polygon.new(200, 200, 250, 200, 250, 250, 200, 250, 200, 200))
+    table.insert(polygons, pd.geometry.polygon.new(100, 100, 150, 100, 150, 150, 100, 150, 100, 100))
+    
+    initTransforms()
 end
 
-function flipTriangle(polygon)
-    local tempPoint = polygon:getPointAt(2)
-    polygon:setPointAt(2, polygon:getPointAt(3))
-    polygon:setPointAt(3, tempPoint)
 
-    return polygon
+function initTransforms()
+    for i, poly in ipairs(polygons) do
+        -- find center position
+        local center = poly:getBoundsRect():centerPoint()
+        local transform = pd.geometry.affineTransform.new()
+        transform:translate(center.x, center.y)
+
+        local inverseTranslate = pd.geometry.affineTransform.new()
+        inverseTranslate:translate(-center.x, -center.y)
+        inverseTranslate:transformPolygon(poly)
+
+        table.insert(transforms, transform)
+
+        local transformedPoly = transform:transformedPolygon(poly)
+        table.insert(transformedPolygons, transformedPoly)
+    end
 end
 
-function getWindingIsClockwise(polygon)
-    local numVertices = polygon:count()
-    if numVertices < 3 then
-        print("tried to check winding order of a polygon with less than 3 points")
-        return true
-    end
-
-    local lowestPointIndex = getLowestPolygonIndex(polygon)
-    local foreIndex = lowestPointIndex - 1
-    if foreIndex < 1 then
-        foreIndex = numVertices
-    end
-
-    local aftIndex = lowestPointIndex + 1
-    if aftIndex > numVertices then
-        aftIndex = 1
-    end
-
-    local forePoint = polygon:getPointAt(foreIndex)
-    local aftPoint = polygon:getPointAt(aftIndex)
-    local lowestPoint = polygon:getPointAt(lowestPointIndex)
-
-    print(string.format("lowest index is %i, fore index is %i, aft index is %i", lowestPointIndex, foreIndex, aftIndex))
-
-    local foreLine = pd.geometry.vector2D.new(lowestPoint.x - forePoint.x, lowestPoint.y - forePoint.y)
-    local aftLine = pd.geometry.vector2D.new(aftPoint.x - lowestPoint.x, aftPoint.y - lowestPoint.y)
-
-    local dotProduct = foreLine:dotProduct(aftLine)
-    local angle = math.acos(dotProduct / (foreLine:magnitude() * aftLine:magnitude()))
-
-    local sign = math.sin(angle)
-
-    print(string.format("angle is %f.1", angle))
-
-    print(string.format("sign of cross product is positive? %s", tostring(sign > 0)))
-
-    return sign < 0
-end
 
 function draw()
     gfx.setColor(playdate.graphics.kColorBlack)
     gfx.drawCircleAtPoint(cursorPos.x, cursorPos.y, cursor_radius)
 
-    for i, poly in ipairs(polygons) do
-        gfx.drawPolygon(poly)
-        drawVertexIndices(poly)
-    end
-
-    if selection ~= nil then
-        gfx.drawLine(cursorPos.x, cursorPos.y, selectionPoint.x, selectionPoint.y)
-    end
-end
-
-function drawVertexIndices(poly)
-    local points = {}
-    for i=1, poly:count() do
-        table.insert(points, poly:getPointAt(i))
-    end
-
-    for i, point in ipairs(points) do
-        gfx.drawText(tostring(i), point.x + VERTEX_LABEL_OFFSET_X, point.y + VERTEX_LABEL_OFFSET_Y)
-    end
-end
-
-
-function addPoint(point, selection)
-    --no polygon selected
-    if selection == nil then
-        local newPolygon = pd.geometry.polygon.new(point.x, point.y, point.x, point.y)
-        table.insert(polygons, newPolygon)
-        print("creating new polygon at")
-        print(point.x, point.y)
-    else
-        print(string.format("adding to existing polygon of length %i", selection:count()))
-        
-        print(selection)
-        local points = {}
-        for i=1, selection:count() do
-            table.insert(points, selection:getPointAt(i))
+    for i, poly in ipairs(transformedPolygons) do
+        if grabbed == i then
+            gfx.fillPolygon(poly)
+        else
+            gfx.drawPolygon(poly)
         end
-
-        table.insert(points, point)
-
-        polygons[selectedIndex] = pd.geometry.polygon.new(points)
-        polygons[selectedIndex]:close()
-
-        if polygons[selectedIndex]:count() == 3 then
-            print("created triangle")
-            if getWindingIsClockwise(polygons[selectedIndex]) then
-                print("winding was clockwise, flipping")
-                print(polygons[selectedIndex])
-                polygons[selectedIndex] = flipTriangle(polygons[selectedIndex])
-                print(polygons[selectedIndex])
-                print(string.format("winding is now %s", tostring(getWindingIsClockwise(polygons[selectedIndex]))))
-            end
-        end
-
-
     end
-    
-
 end
 
 function updateCursor(deltaT)
+    local prevX = cursorPos.x
+    local prevY = cursorPos.y
+
     local xInput = 0
     local yInput = 0
     if pd.buttonIsPressed("up") then
@@ -197,36 +119,204 @@ function updateCursor(deltaT)
 
     cursorPos.y = math.min(cursorPos.y, 240)
     cursorPos.y = math.max(cursorPos.y, 0)
+
+    local delta = pd.geometry.point.new(cursorPos.x - prevX, cursorPos.y - prevY)
+    return delta
+end
+
+function dot(v1, v2)
+
+    return (v1.x * v2.x) + (v1.y * v2.y)
+end
+
+
+--normals from poly 1
+--amount of overlap on poly1 normal
+function checkOverlap(poly1, poly2)
+    local separationVector = pd.geometry.vector2D.new(0, 0)
+    local touching = false
+
+    local poly1Points = {}
+    local poly2Points = {}
+    local normals = {}
+    local poly1Separations = {}
+
+    local offset = poly2:getBoundsRect():centerPoint() - poly1:getBoundsRect():centerPoint()
+
+    for i = 1, poly1:count() do
+        table.insert(poly1Points, poly1:getPointAt(i))
+    end
+
+    for i = 1, poly2:count() do
+        table.insert(poly2Points, poly2:getPointAt(i))
+    end
+
+
+    local axis = poly1Points[1] - poly1Points[poly1:count()]
+    axis = pd.geometry.vector2D.new(axis.y, -axis.x)
+    axis:normalize()
+    table.insert(normals, axis)
+
+    axis = poly2Points[1] - poly2Points[poly2:count()]
+    axis = pd.geometry.vector2D.new(axis.y, -axis.x)
+    axis:normalize()
+    table.insert(normals, axis)
+
+    -- local centerPointX = (poly1Points[1].x + poly1Points[poly1:count()].x) / 2
+    -- local centerPointY = (poly1Points[1].y + poly1Points[poly1:count()].y) / 2
+
+    -- gfx.drawLine(centerPointX, centerPointY, centerPointX + axis.x * 20, centerPointY + axis.y * 20)
+    for i=1, poly1:count() - 1 do
+        axis = poly1Points[i+1] - poly1Points[i]
+        axis = pd.geometry.vector2D.new(axis.y, -axis.x)
+        axis:normalize()
+
+        table.insert(normals, axis)
+    end
+
+    for i=1, poly2:count() - 1 do
+        axis = poly2Points[i+1] - poly2Points[i]
+        axis = pd.geometry.vector2D.new(axis.y, -axis.x)
+        axis:normalize()
+
+        table.insert(normals, axis)
+    end
+
+    
+
+    for i, axis in ipairs(normals) do
+        --project each point onto axis, keep track of min and max
+        local p1Min = math.maxinteger
+        local p2Min = math.maxinteger
+        local p1Max = -math.maxinteger
+        local p2Max = -math.maxinteger
+
+        --for every point in polygon1
+        for _, point in ipairs(poly1Points) do
+            
+            local dotProduct = dot(axis, point)
+
+            p1Max = math.max(p1Max, dotProduct)
+            p1Min = math.min(p1Min, dotProduct)
+        end
+
+        for _, point in ipairs(poly2Points) do
+            local dotProduct = dot(axis, point)
+            p2Max = math.max(p2Max, dotProduct)
+            p2Min = math.min(p2Min, dotProduct)
+        end
+
+        --check for overlaps
+
+        if (p1Min - p2Max > 0) or (p2Min - p1Max > 0) then
+            --not touching
+            --print("not touching")
+            return false
+        end
+
+
+        --find overlap
+        local minVal = math.min(p1Min, p2Min)
+        local maxVal = math.max(p1Max, p2Max)
+        local totalSpace = maxVal - minVal
+
+        local p1Width = p1Max - p1Min
+        local p2Width = p2Max - p2Min
+
+        local overlap = p1Width + p2Width - totalSpace
+
+        if p1Min < p2Min and p2Max > p1Max then
+            --negate overlap
+            overlap = -overlap
+            
+        elseif p2Min < p1Min and p1Max > p2Max then
+            --leave overlap
+        else
+            --totally covered
+            --print("total coverage")
+        end
+
+        poly1Separations[i] = overlap
+    end
+
+    --print("touching!!")
+    local minIndex = -1
+    local minSeparation = math.maxinteger
+    for i, separation in ipairs(poly1Separations) do
+        --print("checking %i", i)
+        if(math.abs(separation) < math.abs(minSeparation)) then
+        --if(separation < minSeparation) then
+            minSeparation = separation
+            
+            minIndex = i
+
+            --print(string.format("new min separation: %.1f", minSeparation))
+        end
+        
+    end
+    --print("found touching")
+    return true, normals[minIndex]:scaledBy(minSeparation)
 end
 
 function playdate.update()
+    if initialized == false then
+        init()
+    end
+
     local deltaT = pd.getElapsedTime()
     gfx.clear()
 
-    local distanceToSelection = math.maxinteger
-    for i, poly in ipairs(polygons) do
-        local bounds = poly:getBoundsRect()
-        local center = bounds:centerPoint()
-        -- print(string.format("poly %i", i))
-        -- -- print(poly)
-        -- print(poly:getPointAt(1))
-        local distance = cursorPos:distanceToPoint(center)
-        if distance < MAGNET_RADIUS and distance < distanceToSelection then
-            distanceToSelection = distance
-            selection = poly
-            selectedIndex = i
-            selectionPoint = center
+    local crankDelta = pd.getCrankChange()
+
+    local deltaCursor = updateCursor(deltaT) --moves cursor, gets amount moved
+    
+    if pd.buttonJustPressed("a") then
+        --check if grabbed anything
+        grabbed = nil
+        for i, poly in ipairs(transformedPolygons) do
+            if poly:containsPoint(cursorPos) then
+                grabbed = i
+            end
         end
     end
 
-    updateCursor(deltaT)
-    
-    if pd.buttonJustReleased("a") then
-        addPoint(cursorPos, selection)
+    if pd.buttonIsPressed("a") and grabbed ~= nil then
+        transforms[grabbed]:translate(deltaCursor.x, deltaCursor.y)
+        transforms[grabbed]:rotate(crankDelta, transforms[grabbed].tx, transforms[grabbed].ty)
+
+        transformedPolygons[grabbed] = transforms[grabbed]:transformedPolygon(polygons[grabbed])
+    else
+        grabbed = nil
     end
 
-    -- local velocityString = string.format("velocity: %.1f ", currentCursorVelocity)
-    -- gfx.drawText(velocityString, 0, 0)
+    
+
+
+    resolvedCollisions = {}
+
+    --check every pair for overlaps
+    for i, poly1 in ipairs(transformedPolygons) do
+        for j, poly2 in ipairs(transformedPolygons) do
+            if i ~= j and i ~= grabbed then
+                --print(string.format("checking %i vs %i", i, j))
+                local overlapping, amount = checkOverlap(poly1, poly2)
+
+                if overlapping then
+                    --print(string.format("%i touching %i!", i, j))
+                    
+                    --local resolvedp2 = poly1:copy()
+                    --resolvedp2:translate(amount.x, amount.y)
+                    --table.insert(resolvedCollisions, resolvedp2)
+                    transforms[i]:translate(amount.x, amount.y)
+                end
+            end
+        end
+    end
+
+    --update transformed polygons
+    for i, poly in ipairs(polygons) do
+        transformedPolygons[i] = transforms[i]:transformedPolygon(polygons[i])
+    end
 
     draw()
     pd.resetElapsedTime()
